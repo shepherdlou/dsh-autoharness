@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { applyEvalResult, evalSkill, renderReport, runCodeCheck } from '../lib/evals.js'
+import { scoreResult } from '../lib/labels.js'
 import { buildIndex } from '../lib/index-surface.js'
 import { flushCounters, reviveSkill, runLifecycle, survivalScore, usageRate } from '../lib/lifecycle.js'
 import { ownedSkills, promote } from '../lib/promoter.js'
@@ -131,7 +132,9 @@ test('evals: code checks, A/B replay with one judge call per criterion, needsPat
   })
   const skill = { name: 'run-api-tests', body: 'Use pnpm --filter api test.' }
   const cases = [{ id: 'k1', task: 'How do I run the api tests?', checks: [{ id: 'c1', kind: 'contains', pattern: 'pnpm --filter api' }, { id: 'c2', kind: 'llm-judge', criterion: 'Does not recommend npm test.' }] }]
-  const result = await evalSkill({ llm, route: { provider: 'p', model: 'm' }, skill, cases })
+  const raw = await evalSkill({ llm, route: { provider: 'p', model: 'm' }, skill, cases })
+  assert.equal(raw.cases[0].hashes.withSkill.length, 16)
+  const result = scoreResult(raw)
   assert.equal(result.passRate, 1)
   assert.equal(result.baseline, 0)
   assert.equal(result.lift, 1)
@@ -144,14 +147,14 @@ test('evals: code checks, A/B replay with one judge call per criterion, needsPat
   assert.equal(worse.eval.runs, 2)
   assert.equal(worse.evalFailures.length, 1)
   const report = renderReport('r1', [result])
-  assert.match(report, /\| run-api-tests \| 2 \| 100% \| 0% \| 100 pts \|/)
+  assert.match(report, /\| run-api-tests \| 2 \| 100% \| 0% \| 100 pts \| no labels yet \|/)
   assert.match(report, /Baseline answer/)
   assert.equal(await evalSkill({ llm, route: { provider: 'p', model: 'm' }, skill, cases: [] }), null)
 })
 
 test('evals: a malformed judge reply fails the check instead of passing it', async () => {
   const llm = scriptedLlm(({ system }) => (system.startsWith('You are a strict grader') ? 'I think yes' : 'answer'))
-  const result = await evalSkill({ llm, route: { provider: 'p', model: 'm' }, skill: { name: 's', body: 'b' }, cases: [{ id: 'k', task: 'some task text', checks: [{ id: 'c1', kind: 'llm-judge', criterion: 'Is correct.' }] }] })
+  const result = scoreResult(await evalSkill({ llm, route: { provider: 'p', model: 'm' }, skill: { name: 's', body: 'b' }, cases: [{ id: 'k', task: 'some task text', checks: [{ id: 'c1', kind: 'llm-judge', criterion: 'Is correct.' }] }] }))
   assert.equal(result.passRate, 0)
   assert.match(result.failures[0].why, /judge error/)
 })

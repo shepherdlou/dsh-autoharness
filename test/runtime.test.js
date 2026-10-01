@@ -300,3 +300,66 @@ test('runtime: teardown lets in-flight work finish within drainTimeoutMs, then a
   await stuck.ctx.dispose()
   assert.ok(Date.now() - started < 2000, 'a hung model call is aborted after the grace period')
 })
+
+test('runtime: review page and label import rescore without new model calls', async (t) => {
+  const { project, ctx, runtime, llm } = setup(t, { config: { reflectEveryN: 100 } })
+  const session = fakeSession({ id: 'labeling', cwd: project })
+  const agent = fakeAgent(session)
+  await play(ctx, session, learningTurn(session))
+  await run(ctx, 'learn', agent)
+  const reviewed = await run(ctx, 'autoharness', agent, 'review')
+  assert.equal(reviewed.kind, 'success', reviewed.text)
+  const page = join(project, '.dsh', 'autoharness', 'evals', 'review.html')
+  const html = readFileSync(page, 'utf8')
+  const data = JSON.parse(/<script type="application\/json" id="data">([\s\S]*?)<\/script>/.exec(html)[1])
+  const item = data.skills[0].cases[0]
+  assert.match(item.evidenceText, /pnpm --filter api test/, 'evidence travels with the case')
+  const judgeCheck = item.checks.find((k) => k.kind === 'llm-judge')
+  // The human disagrees with the judge on the baseline answer.
+  const exported = {
+    format: 'autoharness-labels',
+    labels: [{ skill: 'run-api-tests', case: item.id, check: judgeCheck.id, variant: 'baseline', answer: item.hashes.baseline, human: !judgeCheck.verdicts.baseline.pass, judge: judgeCheck.verdicts.baseline.pass }],
+  }
+  writeFileSync(join(project, 'labels.json'), JSON.stringify(exported))
+  const calls = llm.calls.length
+  const imported = await run(ctx, 'autoharness', agent, 'labels labels.json')
+  assert.equal(imported.kind, 'success', imported.text)
+  assert.match(imported.text, /run-api-tests: \+1 labels; graders agree 0\/1, distrusted: /)
+  assert.equal(llm.calls.length, calls, 'rescoring does not call the model')
+  const dir = join(project, '.dsh', 'skills', 'run-api-tests')
+  const sidecar = readJsonSync(join(dir, '.sidecar.json'))
+  assert.deepEqual(sidecar.eval.graders.untrusted, [`${item.id}/${judgeCheck.id}`])
+  assert.equal(sidecar.eval.runs, 1)
+  assert.equal((await readJsonl(join(dir, '.ledger.jsonl'))).at(-1).op, 'rescore')
+  assert.match((await run(ctx, 'autoharness', agent, 'status')).text, /0\/1 agree, 1 distrusted/)
+  assert.equal((await run(ctx, 'autoharness', agent, 'labels missing.json')).kind, 'error')
+  await ctx.dispose()
+})
+
+test('runtime: one-shot hosts also recover and consolidate before the turn closes', async (t) => {
+  const { project, ctx, runtime, llm } = setup(t, { services: { headlessStartup: {} }, config: { consolidateEveryN: 3 } })
+  const layout = testLayout(project, runtime.env)
+  const seeded = ['alpha-notes', 'beta-notes'].map((name) => ({
+    op: 'create', name, description: `Overlapping note ${name} for curator tests.`, body: `Remember ${name}.`, reason: 'seed',
+    evals: [{ task: `What should I remember about ${name}?`, checks: [{ kind: 'contains', pattern: name }] }],
+  }))
+  await promote({ intents: seeded, layout, config: runtime.config, episode: null, run: { trigger: 'seed' } })
+  const episodes = join(project, '.dsh', 'autoharness', 'episodes')
+  mkdirSync(episodes, { recursive: true })
+  const crashed = fakeSession({ id: 'crashed-one-shot', cwd: project })
+  const lines = learningTurn(crashed).map((event) => runtime.capture.observe(crashed, event).entry).filter(Boolean)
+  runtime.capture.drop('crashed-one-shot')
+  writeFileSync(join(episodes, 'crashed-one-shot.jsonl'), lines.map((line) => JSON.stringify(line)).join('\n') + '\n')
+  const old = new Date(Date.now() - 60 * 60_000)
+  utimesSync(join(episodes, 'crashed-one-shot.jsonl'), old, old)
+
+  const session = fakeSession({ id: 'one-shot-2', cwd: project })
+  const agent = fakeAgent(session)
+  await ctx.emit('agent/created', { agent, source: 'startup' })
+  await play(ctx, session, turnEvents(session, { calls: [{}, {}, {}] }).slice(0, -1))
+  const before = llm.calls.length
+  await ctx.emit('agent/turn-stopping', { agent, turn: 1, signal: new AbortController().signal })
+  assert.ok(existsSync(join(project, '.dsh', 'skills', 'run-api-tests', 'SKILL.md')), `recovered in-turn; ${ctx.warnings.join('|')}`)
+  assert.ok(llm.calls.slice(before).some((c) => c.system.startsWith(CURATOR)), 'curator ran in-turn')
+  await ctx.dispose()
+})

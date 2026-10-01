@@ -65,12 +65,12 @@ test('reflect: request carries library, feedback, and the episode; envelope is v
     { name: 'unrelated-skill', layer: 'global', description: 'Format markdown tables', body: 'BODY-B', sidecar: { category: 'style' } },
   ]
   const episode = { sessionId: 's1', fromSeq: 3, toSeq: 9, entries: [{ seq: 3, kind: 'user', text: 'pnpm tests fail in api' }] }
-  const { system, user } = buildReflectRequest({ episode, owned, otherNames: ['hand-written'], config: testConfig() })
+  const { system, user } = buildReflectRequest({ episode, owned, otherSkills: [{ name: 'hand-written', description: 'Deploy docs\nwith make docs' }], config: testConfig() })
   assert.match(system, /at most 3 intents/)
   assert.match(user, /BODY-A/)
   assert.ok(!user.includes('BODY-B'), 'unrelated bodies are summarized, not inlined')
   assert.match(user, /EVAL_FEEDBACK[\s\S]*contains pnpm/)
-  assert.match(user, /OTHER_SKILL_NAMES\n\n\["hand-written"\]/)
+  assert.match(user, /OTHER_SKILLS\n\n\[\n \{\n  "name": "hand-written",\n  "description": "Deploy docs with make docs"/)
   assert.match(user, /\[3\] USER: pnpm tests fail in api/)
   assert.deepEqual([...selectFullBodies(owned, 'nothing relevant')], ['run-api-tests'], 'needsPatch always gets its body')
   assert.throws(() => normalizeIntents({ nope: [] }), /intents/)

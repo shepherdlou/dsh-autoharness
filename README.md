@@ -23,17 +23,30 @@ project tool calls ≥ consolidateEveryN ─► CURATOR  merges near-duplicates 
 | CAP | `session/event` | Turns the session log into compact, redacted episode entries and counts tool calls, requests, skill loads (`skill` tool or `/name`), and skill views (`read` of a skill file). Persists episodes under `.dsh/autoharness/episodes/` for crash recovery. Subagent sessions are not learned from. |
 | REF | `ctx.llm.stream` (one-shot) | Gets the episode, the current autoharness library, the names of other skills, and eval failures. Returns strict-JSON intents: `create`, `patch`, `merge`, `archive`, or `none`. It only proposes; it never writes. |
 | Promoter | — | The only writer. It lints each intent: name grammar and collisions, sizes, framing tags, prompt injection, secrets, dangerous commands, evidence range, and eval shape. It then builds the bundle in staging, snapshots whatever it replaces, and swaps the result in with renames. Rejections are recorded in `runs/<id>.json`, never partially applied. |
-| EVAL | `ctx.llm.stream` | Each case is answered twice without tools: with the skill (A) and without it (B). Every check grades one property: `contains`, `not-contains`, and `regex` run locally, and each `llm-judge` criterion gets its own judge call. Pass rate and lift (A−B) go into the sidecar; the full answers and verdicts go into `.dsh/autoharness/evals/report.md` for human review. A skill below `evalPassThreshold`, or one that scores worse than having no skill at all, is flagged `needsPatch`, and its failures are fed to the next reflection. |
+| EVAL | `ctx.llm.stream` | Each case is answered twice without tools: with the skill (A) and without it (B). Every check grades one property: `contains`, `not-contains`, and `regex` run locally, and each `llm-judge` criterion gets its own judge call. Pass rate and lift (A−B) go into the sidecar; the full answers and verdicts go into `.dsh/autoharness/evals/report.md`. A skill below `evalPassThreshold`, or one that scores worse than having no skill at all, is flagged `needsPatch`, and its failures are fed to the next reflection. |
+| Grader review | `/autoharness review`, `/autoharness labels` | A self-contained `review.html` for labeling answers with full context; human labels override graders, and graders that disagree with humans stop counting (see below). |
 | IDX | `agent/created` + `agent.inject` | A grouped index of learned skills for the top-level agent. dsh-tool-skill still owns the full catalog and loading. |
 | MNG | `agent/created` (lazy) | Probation, graduation, capacity eviction by survival score (`usage rate × (0.5 + 0.5 × eval pass rate)`), and archive or revive. Nothing is deleted. |
 | Curator | `ctx.llm.stream` | A rare whole-library pass that folds overlapping skills into umbrella skills. |
 
 The plugin only ever touches skills it wrote itself. A skill counts as self-authored only when its `.sidecar.json` names `autoharness` as owner **and** its frontmatter carries `metadata.autoharness`. Hand-written skills, `.agents/skills`, and skills from other plugins are read only to avoid name collisions.
 
+### Checking the graders
+
+A judge model's verdict is an opinion until someone has checked it. `/autoharness review` writes `.dsh/autoharness/evals/review.html`, a single offline page. Each case shows the task, the conversation the skill was learned from, the skill body, and both answers side by side. You mark each answer pass or fail against each criterion. The grader's own verdict stays hidden until you have labeled, so it cannot anchor you. **Download labels** saves a JSON file; `/autoharness labels <file>` imports it.
+
+After an import:
+
+- an answer you labeled is scored by your label, never by the grader;
+- a check whose grader agrees with fewer than 75% of your labels stops counting on unlabeled answers;
+- the skill is rescored from its last eval run without calling the model, and `status` shows the agreement (`3/4 agree, 1 distrusted`).
+
+Labels are stored in the skill bundle (`evals/labels.jsonl`), next to the cases they judge.
+
 ### When reflection runs
 
 - **Interactive hosts** (`dsh tui`, `dsh web`): in the background on a per-project queue, after the turn that crosses `reflectEveryN`. The agent is never blocked.
-- **One-shot hosts** (`dsh headless`): inside `agent/turn-stopping`, before the turn closes, once the session has `minEpisodeToolCalls`. The process exits as soon as the agent is idle, so the work has to finish while the model provider is still alive.
+- **One-shot hosts** (`dsh headless`): inside `agent/turn-stopping`, before the turn closes, once the session has `minEpisodeToolCalls`. The process exits as soon as the agent is idle, so the work, including episode recovery and consolidation, has to finish while the model provider is still alive.
 - On session end, the remaining tail is reflected (best effort). Episodes left behind by a crashed process are recovered by the next session in the same project.
 
 `reflectMode` (`auto` | `background` | `in-turn`) overrides this choice.
@@ -60,6 +73,8 @@ A plugin loaded through `--patch` resolves bare imports from its own directory. 
 | `/learn` | Reflect on the current session right now and report what landed, what was rejected, and the eval scores. |
 | `/autoharness status` | Library, counters, last run. |
 | `/autoharness eval [skill]` | Replay eval cases and write `.dsh/autoharness/evals/report.md`. |
+| `/autoharness review [skill]` | Build `review.html` to label answers and audit the graders. |
+| `/autoharness labels <file>` | Import labels downloaded from the review page and rescore. |
 | `/autoharness curate` | Run the curator now. |
 | `/autoharness archive <skill>` / `revive <skill>` | Archive, or restore the latest archived copy (probation restarts). |
 | `/autoharness pause` / `resume` | Stop or restart learning and lifecycle changes in this project. Recall and usage counting continue. |
@@ -73,12 +88,13 @@ A plugin loaded through `--patch` resolves bare imports from its own directory. 
   .ledger.jsonl                     # append-only: create / patch / merge / eval / graduate / archive
   references/evidence-<id>.md       # redacted transcript slice that justified the change
   evals/case-<id>.json              # task + single-criterion checks
+  evals/labels.jsonl                # human labels from the review page
 .dsh/autoharness/                   # state, git-ignored automatically
-  state.json  last_run.json  runs/  episodes/  snapshots/  archive/  evals/
+  state.json  last_run.json  runs/  episodes/  snapshots/  archive/  evals/ (report.md, review.html)
 $DSH_HOME/skills, $DSH_HOME/autoharness   # the global layer (cross-project lessons)
 ```
 
-You can commit `.dsh/skills/`; `.dsh/autoharness/` writes its own `.gitignore`.
+You can commit `.dsh/skills/`; `.dsh/autoharness/` writes its own `.gitignore`. Run records and eval logs are capped (200 and 50 per layer), snapshots expire after 30 days, and archived skills are kept.
 
 ## Configuration
 
@@ -109,7 +125,7 @@ Set values in the profile patch (`config:` of the `autoharness` entry) or with `
 ## Costs and limits
 
 - Each reflection is one model request. With `evalOnPromote`, each case of a changed skill costs 2 answers plus one judge call per `llm-judge` check, per answer. Point `provider`/`model` at a cheaper route if that matters.
-- Eval replay is a **proxy**: one answer, no tools, no repository access. It measures whether the skill steers the answer, not whether an agent would finish the task. The report keeps every answer and verdict so you can check that the graders agree with you before trusting the scores. Agentic replay (headless child process in a scratch worktree) and a labeling UI are natural next steps.
+- Eval replay is a **proxy**: one answer, no tools, no repository access. It measures whether the skill steers the answer, not whether an agent would finish the task. Label a sample in the review page before you trust the scores. Agentic replay (a headless child process in a scratch worktree) is the natural next step.
 - Learning quality depends on the reflecting model. The promoter enforces structure and safety, not truth. Every change has a ledger entry and an evidence file, and `archive` and `revive` are one command each.
 - Built against `@deepseek-ai/dsh` 0.2.0-rc.2 (developer preview). Upstream APIs may change.
 
