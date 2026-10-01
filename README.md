@@ -31,6 +31,16 @@ project tool calls ≥ consolidateEveryN ─► CURATOR  merges near-duplicates 
 
 The plugin only ever touches skills it wrote itself. A skill counts as self-authored only when its `.sidecar.json` names `autoharness` as owner **and** its frontmatter carries `metadata.autoharness`. Hand-written skills, `.agents/skills`, and skills from other plugins are read only to avoid name collisions.
 
+### Evals that test something
+
+An eval case whose task already contains the answer measures nothing: the model without the skill passes too. Three things guard against that:
+
+- the reflector is told to write the task as the user's next request *before* they knew the lesson;
+- the promoter drops any `contains`/`regex` check whose pattern already appears in the task text (the run record lists what it dropped);
+- checks that pass with and without the skill are recorded as non-discriminating, shown in the report, and fed back to the reflector, which can rewrite a skill's cases with `"replaceEvals": true`.
+
+Eval answers and judges run at the lightest reasoning effort the model offers (`evalEffort: low`; for deepseek-flash that is `off`). A model that spends its whole budget without answering gets an explicit non-answer that fails its checks.
+
 ### Checking the graders
 
 A judge model's verdict is an opinion until someone has checked it. `/autoharness review` writes `.dsh/autoharness/evals/review.html`, a single offline page. Each case shows the task, the conversation the skill was learned from, the skill body, and both answers side by side. You mark each answer pass or fail against each criterion. The grader's own verdict stays hidden until you have labeled, so it cannot anchor you. **Download labels** saves a JSON file; `/autoharness labels <file>` imports it.
@@ -117,6 +127,7 @@ Set values in the profile patch (`config:` of the `autoharness` entry) or with `
 | `evalOnPromote` | `AUTOHARNESS_EVAL_ON_PROMOTE` | true | Replay evals right after a skill lands |
 | `requireEval` | `AUTOHARNESS_REQUIRE_EVAL` | true | Reject skills without an eval case |
 | `evalPassThreshold` | `AUTOHARNESS_EVAL_PASS_THRESHOLD` | 0.5 | Below this, the skill needs a patch |
+| `evalEffort` | `AUTOHARNESS_EVAL_EFFORT` | low | `low` runs eval answers and judges at the lightest reasoning effort the model offers; `default` keeps the provider default |
 | `provider` / `model` | `AUTOHARNESS_PROVIDER` / `AUTOHARNESS_MODEL` | session route | Model used for reflection and evals (for example a cheaper one) |
 | `reflectMode` | `AUTOHARNESS_REFLECT_MODE` | auto | `background`, `in-turn`, or `auto` (in-turn only for one-shot hosts) |
 | `drainTimeoutMs` | `AUTOHARNESS_DRAIN_TIMEOUT_MS` | 60000 | Grace period for in-flight work at teardown |
@@ -129,12 +140,32 @@ Set values in the profile patch (`config:` of the `autoharness` entry) or with `
 - Learning quality depends on the reflecting model. The promoter enforces structure and safety, not truth. Every change has a ledger entry and an evidence file, and `archive` and `revive` are one command each.
 - Built against `@deepseek-ai/dsh` 0.2.0-rc.2 (developer preview). Upstream APIs may change.
 
+## Tested with DeepSeek
+
+`e2e/real.mjs` runs the loop against a real model (deepseek-flash, the dsh default) on a small billing project whose tests only pass with `APP_ENV=test`. One run, four sessions:
+
+| Session | What happened |
+|---|---|
+| "Run the test suite" | `npm test` failed, the agent found `docs/testing.md`; autoharness learned `run-billing-demo-tests` (52 s including reflection and evals) |
+| "Add a test for `total([])`, then run the suite" | the agent loaded the skill first and ran the right command directly; the reflector answered `none` (already covered) |
+| "Commit the new test" with a stated team convention | learned the convention (project) and a sandbox git quirk the agent had to work around (global layer) |
+| "What does src/invoice.js do?" | one tool call, nothing to learn |
+
+| Skill | With the skill | Without |
+|---|---|---|
+| run-billing-demo-tests | 100% | 0% |
+| commit-messages-in-chinese-with-module-prefix | 100% | 40% |
+| fix-broken-git-config-env | 100% | 25% |
+
+Real-model runs found problems the scripted tests could not: reasoning tokens exhausting the old eval budgets, eval tasks that restated the lesson, and one workaround copied into an unrelated skill. All three are fixed in 0.3.0.
+
 ## Development
 
 ```sh
 npm install
 npm test               # unit, fake-harness end-to-end, and integration with real dsh packages
 node e2e/run.mjs       # real `dsh headless` run with a scripted model route, no API key
+DEEPSEEK_API_KEY=... node e2e/real.mjs   # the same loop against DeepSeek (a few minutes, a few cents)
 ```
 
 `e2e/run.mjs` installs `@deepseek-ai/dsh` into `.e2e/` (or uses `DSH_PREFIX`). It then runs two headless sessions against a scripted provider (`e2e/fake-llm.js`). Session 1 has to learn a skill, store its evidence and eval case, and score it. Session 2 has to see the index, load the skill through the real `skill` tool, and have that load counted.

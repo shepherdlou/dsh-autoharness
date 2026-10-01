@@ -1,6 +1,6 @@
 {
   "name": "dsh-autoharness",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Self-learning skill layer with evidence-backed evals for DeepSeek Harness: distills reusable skills from real sessions, gates them through a promoter, and keeps them honest with narrow replay evals.",
   "keywords": [
     "dsh-plugin",
@@ -35,7 +35,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "e2e": "node e2e/run.mjs"
+    "e2e": "node e2e/run.mjs",
+    "e2e:real": "node e2e/real.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2",

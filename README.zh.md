@@ -40,6 +40,16 @@ Run `pnpm --filter api test` from the repo root; plain `npm test` fails in this 
 
 同一道题会问两遍，一遍把技能给模型，一遍不给，两份回答各自过一遍所有检查。带技能的通过率低于 `evalPassThreshold`（默认 0.5），或者比不带技能还低，这条技能就会被标成"需要修改"，失败的地方在下次反思时交给模型去改。
 
+### 别让评估题泄底
+
+题目里要是已经写了答案，评估就测不出东西：不带技能的模型照着题目抄一遍也能过。插件在三个地方防这件事：
+
+- 让反思的模型按"用户下次会怎么问"来出题，那时候用户还不知道这条经验，所以题目里不能出现要考的命令、约定或修法；
+- 写盘前检查一遍，`contains`、`regex` 这类检查要找的内容如果题目里本来就有，这条检查直接删掉，删了什么记在 `runs/` 里；
+- 带不带技能都能过的检查会被记下来，报告里能看到，下次反思时也会告诉模型，模型可以用 `"replaceEvals": true` 把这条技能的题整套换掉。
+
+答题和打分这两步用模型最低的推理档位（`evalEffort: low`，deepseek-flash 上是 `off`），省时间也省钱。模型要是把额度全花在思考上、一个字没答，就按"没回答"算，检查不通过。
+
 ### 抽查打分模型
 
 打分的模型也会判错，所以需要人看一部分。运行：
@@ -143,6 +153,7 @@ $DSH_HOME/skills, $DSH_HOME/autoharness   # 全局层，放跨项目都适用的
 | `evalOnPromote` | `AUTOHARNESS_EVAL_ON_PROMOTE` | true | 技能写进去后马上评估 |
 | `requireEval` | `AUTOHARNESS_REQUIRE_EVAL` | true | 没附评估题的技能不收 |
 | `evalPassThreshold` | `AUTOHARNESS_EVAL_PASS_THRESHOLD` | 0.5 | 通过率低于它就标成需要修改 |
+| `evalEffort` | `AUTOHARNESS_EVAL_EFFORT` | low | `low` 表示答题和打分用模型最低的推理档位，`default` 表示用模型默认档位 |
 | `provider` / `model` | `AUTOHARNESS_PROVIDER` / `AUTOHARNESS_MODEL` | 跟随会话 | 反思和评估用哪个模型，可以换个便宜的 |
 | `reflectMode` | `AUTOHARNESS_REFLECT_MODE` | auto | `background`、`in-turn` 或 `auto` |
 | `drainTimeoutMs` | `AUTOHARNESS_DRAIN_TIMEOUT_MS` | 60000 | 插件卸载时，最多等手头的活多久 |
@@ -155,12 +166,32 @@ $DSH_HOME/skills, $DSH_HOME/autoharness   # 全局层，放跨项目都适用的
 - 能学到什么取决于模型。写盘前的检查只管格式和安全，管不了经验本身对不对。每次改动都有记录和证据，学错了就 `/autoharness archive` 掉。
 - 目前是照着 `@deepseek-ai/dsh` 0.2.0-rc.2 写的，dsh 还在开发者预览阶段，接口以后可能会变。
 
+## 用 DeepSeek 实测的结果
+
+`e2e/real.mjs` 会拿真实模型（dsh 默认的 deepseek-flash）跑一遍。测试项目是个小的计费模块，测试必须带 `APP_ENV=test` 才能跑过，直接 `npm test` 会报错，错误信息里提示去看 `docs/testing.md`。一次跑四个会话：
+
+| 会话 | 结果 |
+|---|---|
+| "跑一下测试" | `npm test` 报错，agent 找到文档用对了命令。插件学到 `run-billing-demo-tests`，连反思带评估一共 52 秒 |
+| "给 `total([])` 加个测试再跑一遍" | agent 第一步就加载了这条技能，直接用对的命令；反思的结论是"已经有了，不用再学" |
+| "提交这个测试"，同时说明团队的提交信息规范 | 学到提交规范（项目层），还学到这个沙箱里 git 的一个环境问题，agent 绕过去了（放在全局层） |
+| "src/invoice.js 是干嘛的" | 只调了一次工具，没什么可学的 |
+
+| 技能 | 带技能 | 不带 |
+|---|---|---|
+| run-billing-demo-tests | 100% | 0% |
+| commit-messages-in-chinese-with-module-prefix | 100% | 40% |
+| fix-broken-git-config-env | 100% | 25% |
+
+真模型跑出了几个用脚本模拟发现不了的问题：推理模型的思考把评估的 token 额度用光了、评估题把要考的内容直接写进了题目、一条技能里抄了另一个问题的绕过办法。这几个都在 0.3.0 里修了。
+
 ## 开发
 
 ```sh
 npm install
 npm test               # 单元测试、假宿主上的端到端测试、和真实 dsh 包的集成测试
 node e2e/run.mjs       # 在真实的 dsh headless 里跑一遍，用脚本模拟模型，不需要 API key
+DEEPSEEK_API_KEY=... node e2e/real.mjs   # 用真实的 DeepSeek 跑同样的流程，几分钟，几毛钱
 ```
 
 `e2e/run.mjs` 会把 `@deepseek-ai/dsh` 装到 `.e2e/` 下（已经装过的话设 `DSH_PREFIX` 指过去），然后用 `e2e/fake-llm.js` 这个假模型跑两个会话。第一个会话里 `npm test` 失败、`pnpm` 成功，要求插件学到技能、存下证据和评估题、打完分。第二个会话要求模型看到索引，通过真实的 `skill` 工具加载这条技能，而且这次加载被记上。

@@ -18,7 +18,7 @@ function skillIntent(name, category = 'testing') {
     description: `Learned skill ${name} for lifecycle tests, long enough.`,
     body: `Do ${name}.`,
     reason: 'test',
-    evals: [{ task: `How do I do ${name} in this repo?`, checks: [{ kind: 'contains', pattern: name }] }],
+    evals: [{ task: 'What is the right way to handle this in the repo?', checks: [{ kind: 'contains', pattern: name }] }],
   }
 }
 
@@ -147,7 +147,7 @@ test('evals: code checks, A/B replay with one judge call per criterion, needsPat
   assert.equal(worse.eval.runs, 2)
   assert.equal(worse.evalFailures.length, 1)
   const report = renderReport('r1', [result])
-  assert.match(report, /\| run-api-tests \| 2 \| 100% \| 0% \| 100 pts \| no labels yet \|/)
+  assert.match(report, /\| run-api-tests \| 2 \| 100% \| 0% \| 100 pts \| none \| no labels yet \|/)
   assert.match(report, /Baseline answer/)
   assert.equal(await evalSkill({ llm, route: { provider: 'p', model: 'm' }, skill, cases: [] }), null)
 })

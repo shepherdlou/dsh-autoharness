@@ -183,3 +183,45 @@ test('promote: per-run limit and one change per skill per run', async (t) => {
   assert.match(result.rejected[0].errors.join(), /already exists/)
   assert.match(result.rejected[1].errors.join(), /per-run limit/)
 })
+
+test('promote: eval checks that leak into their task are dropped before lint', async (t) => {
+  const { project, env } = tempProject(t)
+  const layout = testLayout(project, env)
+  const leaky = createIntent({
+    evals: [
+      { task: 'Run the api tests with pnpm --filter api test and report.', checks: [{ kind: 'contains', pattern: 'pnpm --filter api test' }, { kind: 'llm-judge', criterion: 'Reports the pass count.' }] },
+      { task: 'Our rule: use pnpm --filter api test. Run the tests.', checks: [{ kind: 'regex', pattern: 'pnpm\\s+--filter' }] },
+    ],
+  })
+  const result = await promote({ intents: [leaky], layout, config, episode, run: { trigger: 'test' } })
+  assert.equal(result.landed.length, 1)
+  assert.equal(result.warnings.length, 3, result.warnings.join('\n'))
+  const dir = join(project, '.dsh', 'skills', 'run-api-tests')
+  const cases = readdirSync(join(dir, 'evals')).map((name) => readJsonSync(join(dir, 'evals', name)))
+  assert.equal(cases.length, 1, 'the case with only leaking checks is gone')
+  assert.deepEqual(cases[0].checks.map((c) => c.kind), ['llm-judge'])
+  assert.equal(readJsonSync(join(project, '.dsh', 'autoharness', 'last_run.json')).warnings.length, 3)
+
+  const allLeak = createIntent({ name: 'second-skill-x', evals: [{ task: 'use pnpm --filter api test', checks: [{ kind: 'contains', pattern: 'pnpm --filter api test' }] }] })
+  const rejected = await promote({ intents: [allLeak], layout, config, episode, run: { trigger: 'test' } })
+  assert.match(rejected.rejected[0].errors.join(), /at least one eval case is required/)
+})
+
+test('promote: patch with replaceEvals swaps the cases and clears the old scores', async (t) => {
+  const { project, env } = tempProject(t)
+  const layout = testLayout(project, env)
+  await promote({ intents: [createIntent()], layout, config, episode, run: { trigger: 'test' } })
+  const dir = join(project, '.dsh', 'skills', 'run-api-tests')
+  const before = readdirSync(join(dir, 'evals'))
+  const patched = await promote({
+    intents: [{ op: 'patch', name: 'run-api-tests', reason: 'old cases gave the answer away', replaceEvals: true, evals: [{ task: 'The api tests need running, how?', checks: [{ kind: 'contains', pattern: '--filter api' }] }] }],
+    layout, config, episode, run: { trigger: 'test' },
+  })
+  assert.equal(patched.landed[0].op, 'patch', JSON.stringify(patched.rejected))
+  const after = readdirSync(join(dir, 'evals'))
+  assert.equal(after.length, 1)
+  assert.notDeepEqual(after, before)
+  assert.equal(readJsonSync(join(dir, '.sidecar.json')).eval, null)
+  assert.ok(readdirSync(join(project, '.dsh', 'autoharness', 'snapshots', patched.runId, 'run-api-tests', 'evals')).includes(before[0]), 'old cases kept in the snapshot')
+  assert.match(lintIntent({ op: 'patch', name: 'run-api-tests', reason: 'r', replaceEvals: true }, { config, owned: ownedSkills(layout), isTaken: () => false, episode: null }).join(), /replaceEvals needs at least one/)
+})

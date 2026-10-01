@@ -88,3 +88,22 @@ test('llm: route comes from config first, then the session header', () => {
   assert.deepEqual(resolveRoute({ provider: '', model: 'deepseek-reasoner' }, session), { provider: 'deepseek', model: 'deepseek-reasoner' })
   assert.equal(resolveRoute({ provider: '', model: '' }, { requestHeader: () => undefined }), null)
 })
+
+test('llm: eval calls pick the lightest offered effort; a budget spent on reasoning is an explicit non-answer', async () => {
+  const { NO_ANSWER, lightEffort } = await import('../lib/llm.js')
+  const offered = { resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'high' }, { id: 'low' }, { id: 'max' }] } }) }
+  assert.equal(await lightEffort(offered, { provider: 'p1', model: 'm1' }), 'low')
+  assert.equal(await lightEffort({ resolveModelInfo: async () => ({}) }, { provider: 'p2', model: 'm2' }), undefined)
+  assert.equal(await lightEffort({ resolveModelInfo: async () => { throw new Error('unknown route') } }, { provider: 'p3', model: 'm3' }), undefined)
+  assert.equal(await lightEffort({}, { provider: 'p4', model: 'm4' }), undefined)
+
+  const reasoningOnly = { stream: (options) => (async function* () {
+    reasoningOnly.seen = options
+    yield { type: 'reasoning-delta', index: 0, text: 'thinking forever' }
+    yield { type: 'finish', reason: { kind: 'max-tokens' } }
+  })() }
+  const route = { provider: 'p', model: 'm' }
+  assert.equal(await complete(reasoningOnly, { route, system: 's', user: 'u', allowTruncated: true, effort: 'low' }), NO_ANSWER)
+  assert.equal(reasoningOnly.seen.reasoningEffort, 'low')
+  await assert.rejects(complete(reasoningOnly, { route, system: 's', user: 'u' }), /max-tokens/)
+})

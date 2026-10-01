@@ -76,3 +76,17 @@ test('reflect: request carries library, feedback, and the episode; envelope is v
   assert.throws(() => normalizeIntents({ nope: [] }), /intents/)
   assert.deepEqual(normalizeIntents({ intents: [{ op: 'none' }, 'junk', null] }), [{ op: 'none' }])
 })
+
+test('reflect: evals that pass without the skill are fed back for rewriting', async () => {
+  const { evalFeedback, evalsDoNotDiscriminate } = await import('../lib/reflect.js')
+  const weak = { name: 'weak-skill', description: 'd', body: 'b', sidecar: { eval: { checks: 2, passRate: 1, lift: 0, nonDiscriminating: ['k/c1', 'k/c2'] } } }
+  const fine = { name: 'fine-skill', description: 'd', body: 'b', sidecar: { eval: { checks: 2, passRate: 1, lift: 0.5, nonDiscriminating: ['k/c1'] } } }
+  assert.equal(evalsDoNotDiscriminate(weak.sidecar), true)
+  assert.equal(evalsDoNotDiscriminate(fine.sidecar), false)
+  const rows = evalFeedback([weak, fine])
+  assert.equal(rows.length, 1)
+  assert.match(rows[0].issue, /do not discriminate/)
+  const { system } = buildReflectRequest({ episode: { sessionId: 's', fromSeq: 0, toSeq: 1, entries: [{ seq: 0, kind: 'user', text: 'x' }] }, owned: [weak], config: testConfig() })
+  assert.match(system, /replaceEvals/)
+  assert.match(system, /must not contain the command, flag, path, convention, or fix/)
+})

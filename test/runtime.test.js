@@ -207,7 +207,7 @@ test('runtime: consolidation fires on the project tool-call budget; subagents an
   const layout = testLayout(project, runtime.env)
   const seeded = ['alpha-notes', 'beta-notes'].map((name) => ({
     op: 'create', name, description: `Overlapping note ${name} for curator tests.`, body: `Remember ${name}.`, reason: 'seed',
-    evals: [{ task: `What should I remember about ${name}?`, checks: [{ kind: 'contains', pattern: name }] }],
+    evals: [{ task: 'What should I remember before changing this repo?', checks: [{ kind: 'contains', pattern: name }] }],
   }))
   assert.equal((await promote({ intents: seeded, layout, config: runtime.config, episode: null, run: { trigger: 'seed' } })).landed.length, 2)
   const session = fakeSession({ id: 'main', cwd: project })
@@ -341,7 +341,7 @@ test('runtime: one-shot hosts also recover and consolidate before the turn close
   const layout = testLayout(project, runtime.env)
   const seeded = ['alpha-notes', 'beta-notes'].map((name) => ({
     op: 'create', name, description: `Overlapping note ${name} for curator tests.`, body: `Remember ${name}.`, reason: 'seed',
-    evals: [{ task: `What should I remember about ${name}?`, checks: [{ kind: 'contains', pattern: name }] }],
+    evals: [{ task: 'What should I remember before changing this repo?', checks: [{ kind: 'contains', pattern: name }] }],
   }))
   await promote({ intents: seeded, layout, config: runtime.config, episode: null, run: { trigger: 'seed' } })
   const episodes = join(project, '.dsh', 'autoharness', 'episodes')
@@ -362,4 +362,32 @@ test('runtime: one-shot hosts also recover and consolidate before the turn close
   assert.ok(existsSync(join(project, '.dsh', 'skills', 'run-api-tests', 'SKILL.md')), `recovered in-turn; ${ctx.warnings.join('|')}`)
   assert.ok(llm.calls.slice(before).some((c) => c.system.startsWith(CURATOR)), 'curator ran in-turn')
   await ctx.dispose()
+})
+
+test('runtime: a malformed reflector reply gets one retry; a lasting failure is recorded and shown', async (t) => {
+  let replies = 0
+  const inner = harnessLlm()
+  const flaky = { calls: inner.calls, stream: (options) => {
+    if (options.system.startsWith(REFLECTOR) && replies++ === 0) return scriptedLlm(() => 'Sure! Here is my analysis of the episode, no JSON though.').stream(options)
+    return inner.stream(options)
+  } }
+  const { project, ctx, runtime } = setup(t, { llm: flaky })
+  const session = fakeSession({ id: 'retry', cwd: project })
+  await play(ctx, session, learningTurn(session))
+  await runtime.whenIdle()
+  assert.equal(replies, 2, 'retried once')
+  assert.match(inner.calls.filter((c) => c.system.startsWith(REFLECTOR))[0].user, /REMINDER: your previous reply could not be used/)
+  assert.ok(existsSync(join(project, '.dsh', 'skills', 'run-api-tests', 'SKILL.md')))
+  await ctx.dispose()
+
+  const broken = setup(t, { llm: scriptedLlm(({ system }) => (system.startsWith(REFLECTOR) ? 'never json' : 'x')) })
+  const s2 = fakeSession({ id: 'broken', cwd: broken.project })
+  const agent = fakeAgent(s2)
+  await play(broken.ctx, s2, learningTurn(s2))
+  await broken.runtime.whenIdle()
+  const last = readJsonSync(join(broken.project, '.dsh', 'autoharness', 'last_run.json'))
+  assert.match(last.error, /reflector output|no JSON object/)
+  assert.equal(broken.llm.calls.filter((c) => c.system.startsWith(REFLECTOR)).length, 2, 'one retry, not a loop')
+  assert.match((await run(broken.ctx, 'autoharness', agent, 'status')).text, /FAILED: /)
+  await broken.ctx.dispose()
 })
