@@ -1,0 +1,3 @@
+- insert:
+    - id: autoharness
+      name: dsh-autoharness

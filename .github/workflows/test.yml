@@ -1,0 +1,33 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: .e2e
+          key: dsh-e2e-${{ runner.os }}-0.2.0-rc.2
+      - run: node e2e/run.mjs

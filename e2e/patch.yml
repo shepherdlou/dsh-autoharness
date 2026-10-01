@@ -1,0 +1,14 @@
+# Overlay for e2e/run.mjs: a scripted LLM route, autoharness with a low
+# threshold, and the default agent model pointed at the scripted route.
+- insert:
+    - id: autoharness-fake-llm
+      name: ./fake-llm.js
+    - id: autoharness
+      name: ../lib/index.js
+      config:
+        reflectEveryN: 3
+        minEpisodeToolCalls: 2
+- id: agent-default-model
+  config:
+    provider: autoharness-fake
+    model: fake-1

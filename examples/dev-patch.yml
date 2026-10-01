@@ -1,0 +1,17 @@
+# Try autoharness in any profile without installing it:
+#
+#   cd /path/to/dsh-autoharness
+#   # --patch plugins resolve bare imports from their own directory, so point
+#   # node_modules/@deepseek-ai at the packages of the dsh you launch:
+#   mkdir -p node_modules && ln -sfn "$(npm root -g)/@deepseek-ai/dsh/node_modules/@deepseek-ai" node_modules/@deepseek-ai
+#   #   (local install instead: ln -sfn /path/to/prefix/node_modules/@deepseek-ai node_modules/@deepseek-ai)
+#   dsh tui --patch ./examples/dev-patch.yml
+#
+# Relative plugin paths are resolved next to this file.
+- insert:
+    - id: autoharness
+      name: ../lib/index.js
+      config:
+        # learn quickly while trying it out; the default is 50
+        reflectEveryN: 10
+        minEpisodeToolCalls: 4
