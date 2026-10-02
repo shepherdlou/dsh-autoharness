@@ -50,6 +50,23 @@ Run `pnpm --filter api test` from the repo root; plain `npm test` fails in this 
 
 答题和打分这两步用模型最低的推理档位（`evalEffort: low`，deepseek-flash 上是 `off`），省时间也省钱。模型要是把额度全花在思考上、一个字没答，就按"没回答"算，检查不通过。
 
+### 让 agent 真跑一遍
+
+自动评估只让模型凭空答一次：不能调工具，也看不到仓库。不带技能的那份回答对项目一无所知，基本都是 0 分，这只能说明技能里有信息，说明不了它能不能让 agent 少走弯路。想知道这个，用：
+
+```
+/autoharness replay <技能名|all> [次数]
+```
+
+具体做法：
+
+- 把项目复制一份（克隆当前提交，再带上你还没提交的改动；去掉 git remote，依赖目录只读链接过去），在副本里用 `dsh headless` 真跑评估题。带技能跑一次，不带技能跑一次，其他条件都一样：别的技能、模型、仓库内容；
+- 子进程用 `workspace-write` 加审批 `never` 的权限：往副本外面写会被 dsh 的沙箱拦下，申请提权一律拒绝；
+- 用同样的检查给 agent 执行过的命令和最后的回答打分，报告里再加上两次运行各自的工具调用次数、失败次数、token 和耗时；
+- 结果存在 sidecar 的 `eval.agentic` 里。有了回放结果，"需不需要修改"和存活分数就以它为准，失败的地方也会交给下次反思。
+
+dsh 的沙箱不隔离网络，所以回放只在你手动敲命令时才跑。题目里如果有 push、deploy、publish、ssh、生产环境这类会影响外部的操作，这道题就跳过，并告诉你原因。每次回放等于把任务完整跑两遍，花费也按两遍算。
+
 ### 抽查打分模型
 
 打分的模型也会判错，所以需要人看一部分。运行：
@@ -104,6 +121,7 @@ dsh tui --patch /path/to/dsh-autoharness/examples/dev-patch.yml
 | `/learn` | 马上反思当前会话，告诉你写进了什么、拒掉了什么、评估得了几分 |
 | `/autoharness status` | 看技能列表、计数、上一次运行的结果 |
 | `/autoharness eval [skill]` | 重跑评估，生成 `.dsh/autoharness/evals/report.md` |
+| `/autoharness replay <skill\|all> [次数]` | 在项目副本里让 agent 真跑评估题，带技能和不带技能各一次，对比检查结果、工具调用、失败次数、token 和耗时 |
 | `/autoharness review [skill]` | 生成 `review.html`，人工标注、抽查打分模型 |
 | `/autoharness labels <file>` | 导入从 review 页面下载的标签，重新算分 |
 | `/autoharness curate` | 马上整理一次技能库，合并重复的技能 |
@@ -156,6 +174,10 @@ $DSH_HOME/skills, $DSH_HOME/autoharness   # 全局层，放跨项目都适用的
 | `evalEffort` | `AUTOHARNESS_EVAL_EFFORT` | low | `low` 表示答题和打分用模型最低的推理档位，`default` 表示用模型默认档位 |
 | `provider` / `model` | `AUTOHARNESS_PROVIDER` / `AUTOHARNESS_MODEL` | 跟随会话 | 反思和评估用哪个模型，可以换个便宜的 |
 | `reflectMode` | `AUTOHARNESS_REFLECT_MODE` | auto | `background`、`in-turn` 或 `auto` |
+| `replay` | `AUTOHARNESS_REPLAY` | manual | `manual` 允许用 `/autoharness replay`，`off` 关掉 |
+| `replayTimeoutMs` / `replayRuns` | `AUTOHARNESS_REPLAY_TIMEOUT_MS` / `_REPLAY_RUNS` | 600000 / 1 | 每次运行的时间上限；每道题每种条件跑几次（1 到 5） |
+| `dshCommand` | `AUTOHARNESS_DSH_COMMAND` | 当前运行的 dsh | 回放时用哪个 dsh |
+| `keepReplays` | `AUTOHARNESS_KEEP_REPLAYS` | false | 保留回放用的副本，方便排查 |
 | `drainTimeoutMs` | `AUTOHARNESS_DRAIN_TIMEOUT_MS` | 60000 | 插件卸载时，最多等手头的活多久 |
 | `paused` | `AUTOHARNESS_PAUSED` | false | 总开关 |
 
@@ -163,6 +185,7 @@ $DSH_HOME/skills, $DSH_HOME/autoharness   # 全局层，放跨项目都适用的
 
 - 每次反思是一次模型请求。
 - 开着 `evalOnPromote` 的话，每道题要答两遍，每条 `llm-judge` 检查还要再各判两次。在意费用就把 `provider`、`model` 指向便宜的模型。
+- 回放会在项目副本里真的执行命令。副本没法往自己（和 `/tmp`）以外的地方写东西，但能联网。
 - 能学到什么取决于模型。写盘前的检查只管格式和安全，管不了经验本身对不对。每次改动都有记录和证据，学错了就 `/autoharness archive` 掉。
 - 目前是照着 `@deepseek-ai/dsh` 0.2.0-rc.2 写的，dsh 还在开发者预览阶段，接口以后可能会变。
 
@@ -190,7 +213,7 @@ $DSH_HOME/skills, $DSH_HOME/autoharness   # 全局层，放跨项目都适用的
 ```sh
 npm install
 npm test               # 单元测试、假宿主上的端到端测试、和真实 dsh 包的集成测试
-node e2e/run.mjs       # 在真实的 dsh headless 里跑一遍，用脚本模拟模型，不需要 API key
+node e2e/run.mjs       # 在真实的 dsh headless 里跑学习、召回和回放，用脚本模拟模型，不需要 API key
 DEEPSEEK_API_KEY=... node e2e/real.mjs   # 用真实的 DeepSeek 跑同样的流程，几分钟，几毛钱
 ```
 

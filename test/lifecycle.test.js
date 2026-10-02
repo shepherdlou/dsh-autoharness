@@ -148,7 +148,7 @@ test('evals: code checks, A/B replay with one judge call per criterion, needsPat
   assert.equal(worse.evalFailures.length, 1)
   const report = renderReport('r1', [result])
   assert.match(report, /\| run-api-tests \| 2 \| 100% \| 0% \| 100 pts \| none \| no labels yet \|/)
-  assert.match(report, /Baseline answer/)
+  assert.match(report, /Answer without the skill/)
   assert.equal(await evalSkill({ llm, route: { provider: 'p', model: 'm' }, skill, cases: [] }), null)
 })
 

@@ -41,6 +41,17 @@ An eval case whose task already contains the answer measures nothing: the model 
 
 Eval answers and judges run at the lightest reasoning effort the model offers (`evalEffort: low`; for deepseek-flash that is `off`). A model that spends its whole budget without answering gets an explicit non-answer that fails its checks.
 
+### Agent replay: watch the agent do it
+
+The one-shot eval answers without tools and without the repository, so the answer without the skill knows nothing about the project and scores near zero. That says the skill carries information, not that it saves an agent any work. `/autoharness replay <skill|all> [runs]` measures that directly:
+
+- each eval task runs as a real `dsh headless` session in a disposable copy of the project (a fresh clone of HEAD plus your uncommitted changes, with no git remotes; dependency folders are linked read-only), once with the skill and once without; everything else (other skills, model, repository) is the same;
+- the child runs with `workspace-write` and approval `never`: dsh's sandbox denies writes outside the copy and refuses escalations;
+- the same checks grade the agent's commands plus its final answer, and the report adds tool calls, failed calls, tokens, and seconds for both runs;
+- scores go to `eval.agentic` in the sidecar; when present they decide `needsPatch` and the survival score, and failures feed the next reflection.
+
+dsh does not isolate the network, so replays never run on their own, and tasks that look like external effects (push, deploy, publish, ssh, production, ...) are skipped with a reason. Each replay is two full agent sessions, so it costs as much as running the task twice.
+
 ### Checking the graders
 
 A judge model's verdict is an opinion until someone has checked it. `/autoharness review` writes `.dsh/autoharness/evals/review.html`, a single offline page. Each case shows the task, the conversation the skill was learned from, the skill body, and both answers side by side. You mark each answer pass or fail against each criterion. The grader's own verdict stays hidden until you have labeled, so it cannot anchor you. **Download labels** saves a JSON file; `/autoharness labels <file>` imports it.
@@ -83,6 +94,7 @@ A plugin loaded through `--patch` resolves bare imports from its own directory. 
 | `/learn` | Reflect on the current session right now and report what landed, what was rejected, and the eval scores. |
 | `/autoharness status` | Library, counters, last run. |
 | `/autoharness eval [skill]` | Replay eval cases and write `.dsh/autoharness/evals/report.md`. |
+| `/autoharness replay <skill\|all> [runs]` | Run the eval tasks as real agent sessions in a disposable copy, with and without the skill, and compare checks, tool calls, failed calls, tokens, and time. |
 | `/autoharness review [skill]` | Build `review.html` to label answers and audit the graders. |
 | `/autoharness labels <file>` | Import labels downloaded from the review page and rescore. |
 | `/autoharness curate` | Run the curator now. |
@@ -130,13 +142,18 @@ Set values in the profile patch (`config:` of the `autoharness` entry) or with `
 | `evalEffort` | `AUTOHARNESS_EVAL_EFFORT` | low | `low` runs eval answers and judges at the lightest reasoning effort the model offers; `default` keeps the provider default |
 | `provider` / `model` | `AUTOHARNESS_PROVIDER` / `AUTOHARNESS_MODEL` | session route | Model used for reflection and evals (for example a cheaper one) |
 | `reflectMode` | `AUTOHARNESS_REFLECT_MODE` | auto | `background`, `in-turn`, or `auto` (in-turn only for one-shot hosts) |
+| `replay` | `AUTOHARNESS_REPLAY` | manual | `manual` allows `/autoharness replay`; `off` disables it |
+| `replayTimeoutMs` / `replayRuns` | `AUTOHARNESS_REPLAY_TIMEOUT_MS` / `_REPLAY_RUNS` | 600000 / 1 | Time limit per run; runs per case and variant (1-5) |
+| `dshCommand` | `AUTOHARNESS_DSH_COMMAND` | the running dsh | dsh executable for replay runs |
+| `keepReplays` | `AUTOHARNESS_KEEP_REPLAYS` | false | Keep replay copies for debugging |
 | `drainTimeoutMs` | `AUTOHARNESS_DRAIN_TIMEOUT_MS` | 60000 | Grace period for in-flight work at teardown |
 | `paused` | `AUTOHARNESS_PAUSED` | false | Global kill switch |
 
 ## Costs and limits
 
 - Each reflection is one model request. With `evalOnPromote`, each case of a changed skill costs 2 answers plus one judge call per `llm-judge` check, per answer. Point `provider`/`model` at a cheaper route if that matters.
-- Eval replay is a **proxy**: one answer, no tools, no repository access. It measures whether the skill steers the answer, not whether an agent would finish the task. Label a sample in the review page before you trust the scores. Agentic replay (a headless child process in a scratch worktree) is the natural next step.
+- The automatic eval is a **proxy**: one answer, no tools, no repository access. Use `/autoharness replay` to see real agent runs, and label a sample in the review page before you trust any scores.
+- A replay runs real commands in a copy of your project. The copy cannot write outside itself (or `/tmp`), but it can reach the network.
 - Learning quality depends on the reflecting model. The promoter enforces structure and safety, not truth. Every change has a ledger entry and an evidence file, and `archive` and `revive` are one command each.
 - Built against `@deepseek-ai/dsh` 0.2.0-rc.2 (developer preview). Upstream APIs may change.
 
@@ -164,7 +181,7 @@ Real-model runs found problems the scripted tests could not: reasoning tokens ex
 ```sh
 npm install
 npm test               # unit, fake-harness end-to-end, and integration with real dsh packages
-node e2e/run.mjs       # real `dsh headless` run with a scripted model route, no API key
+node e2e/run.mjs       # real `dsh headless` runs (learning, recall, and replay children) with a scripted model route, no API key
 DEEPSEEK_API_KEY=... node e2e/real.mjs   # the same loop against DeepSeek (a few minutes, a few cents)
 ```
 

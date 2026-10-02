@@ -1,6 +1,6 @@
 {
   "name": "dsh-autoharness",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Self-learning skill layer with evidence-backed evals for DeepSeek Harness: distills reusable skills from real sessions, gates them through a promoter, and keeps them honest with narrow replay evals.",
   "keywords": [
     "dsh-plugin",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Agent replay: `/autoharness replay <skill|all> [runs]` runs each eval task as a real `dsh headless` session in a disposable copy of the project, once with the skill and once without, everything else equal. The copy is a clone of HEAD plus uncommitted changes, without remotes; the child runs under `workspace-write` with approval `never`. Checks grade the agent's commands and final answer; the report adds tool calls, failed calls, tokens, and time. Scores land in `eval.agentic` and take precedence for `needsPatch` and survival. Tasks that look like external effects are skipped. Manual only (`replay: manual | off`).
+- Review page and report show replays as runs (commands, failures, stats) next to the one-shot answers; labels work the same.
+- Label import rescores the run each label belongs to.
+
 ## 0.3.0
 
 Tested end to end against DeepSeek (deepseek-flash) in `dsh headless`; these fixes came from those runs.

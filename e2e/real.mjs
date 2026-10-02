@@ -14,9 +14,14 @@
 //   3. a commit with a stated → a convention skill, with eval tasks that do not
 //      team convention          restate the convention
 //   4. a plain question       → nothing to learn
+// Then a replay of the learned testing skill: two real agent runs in disposable
+// copies, with and without the skill (judges via e2e/deepseek-llm.mjs).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { fakeAgent, fakeCtx } from '../test/helpers.js'
+import { llm as deepseek, route as deepseekRoute } from './deepseek-llm.mjs'
 import { check, dshInstall, fail, headless, readJson, step, workspace } from './setup.mjs'
 
 if (!process.env.DEEPSEEK_API_KEY) fail('set DEEPSEEK_API_KEY to run the real-model e2e')
@@ -125,6 +130,23 @@ try {
     const e = evalOf(name)
     step(`  ${name}: ${e ? `${Math.round(e.passRate * 100)}% with the skill vs ${Math.round(e.baseline * 100)}% without, ${e.checks} checks` : 'no eval yet'}`)
   }
+  // 5. Replay the testing skill as real agent runs: same repo copy, with and without the skill.
+  step(`replay: ${testing} as real DeepSeek agent runs, with and without the skill`)
+  const lib = (name) => import(pathToFileURL(join(ws.plugin, 'lib', name)).href)
+  const { AutoharnessRuntime } = await lib('runtime.js')
+  const { resolveConfig } = await lib('config.js')
+  const { commandDefinitions } = await lib('commands.js')
+  const ctx = fakeCtx({ llm: deepseek })
+  const runtime = new AutoharnessRuntime({ ctx, config: resolveConfig({ dshCommand: dsh }, {}), createUserMessage: (input) => input, env: { ...process.env, DSH_HOME: ws.home } })
+  for (const definition of commandDefinitions(runtime)) ctx.commands.register(definition)
+  const agent = fakeAgent({ header: { id: 'real-replay', cwd: ws.project }, requestHeader: () => ({ config: deepseekRoute }) })
+  const started = Date.now()
+  const out = await ctx.command('autoharness').handler({ rawInput: `replay ${testing}`, agent, signal: new AbortController().signal, commandId: 'real' })
+  step(`replay (${Math.round((Date.now() - started) / 1000)}s):\n${out.text}`)
+  check(out.kind === 'success', 'the replay finished')
+  const agentic = readJson(join(skillsDir, testing, '.sidecar.json')).eval?.agentic
+  check(agentic?.efficiency, 'agentic scores were recorded')
+  await ctx.dispose()
   step(`real-model e2e passed; review answers in ${join(ws.project, '.dsh', 'autoharness', 'evals', 'report.md')}`)
 } finally {
   if (keep) step(`kept ${ws.work}`)
